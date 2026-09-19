@@ -1,0 +1,273 @@
+name: Build LuaJIT (linc_luajit libs)
+
+# Manually triggered - go to Actions tab -> "Build LuaJIT (linc_luajit libs)" -> Run workflow.
+# Builds LuaJIT for every platform linc_luajit ships prebuilt libs for, with
+# LUAJIT_ENABLE_LUA52COMPAT on by default, and uploads one zip laid out as
+# lib/lua/lib/<Platform>/... so you can drop it straight into the repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      luajit_ref:
+        description: "LuaJIT git ref to build (branch, tag, or commit SHA)"
+        required: false
+        default: "v2.1"
+      lua52compat:
+        description: "Build with LUAJIT_ENABLE_LUA52COMPAT"
+        type: boolean
+        required: false
+        default: true
+
+env:
+  XCFLAGS_BASE: ${{ inputs.lua52compat && '-DLUAJIT_ENABLE_LUA52COMPAT' || '' }}
+
+jobs:
+  linux64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: LuaJIT/LuaJIT
+          ref: ${{ inputs.luajit_ref }}
+
+      - name: Build
+        run: make -j$(nproc) BUILDMODE=static XCFLAGS="${{ env.XCFLAGS_BASE }}"
+
+      - name: Collect
+        run: |
+          mkdir -p out/Linux64
+          cp src/libluajit.a out/Linux64/libluajit.a
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Linux64
+          path: out
+
+  # MSVC build - produces lua51.lib (the import lib linc_luajit ships for
+  # Windows/ and Windows64/). Static ("static" arg to msvcbuild.bat) so no
+  # DLL is needed at runtime.
+  windows-msvc:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86
+            outdir: Windows
+          - arch: x64
+            outdir: Windows64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: LuaJIT/LuaJIT
+          ref: ${{ inputs.luajit_ref }}
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+
+      - name: Inject LUA52COMPAT into msvcbuild.bat
+        if: ${{ inputs.lua52compat }}
+        shell: pwsh
+        run: |
+          (Get-Content src\msvcbuild.bat) -replace `
+            '(set LJCOMPILE=.*)', '$1 -DLUAJIT_ENABLE_LUA52COMPAT' |
+            Set-Content src\msvcbuild.bat
+
+      - name: Build (static)
+        shell: cmd
+        working-directory: src
+        run: msvcbuild.bat static
+
+      - name: Collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out/${{ matrix.outdir }}
+          Copy-Item src/lua51.lib out/${{ matrix.outdir }}/lua51.lib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.outdir }}-msvc
+          path: out
+
+  # mingw-w64 build - produces the libluajit-5.1.a static archive linc_luajit
+  # ships alongside lua51.lib for both Windows/ and Windows64/.
+  windows-mingw:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - cross: x86_64-w64-mingw32-
+            hostcc: "gcc"
+            outdir: Windows64
+          - cross: i686-w64-mingw32-
+            hostcc: "gcc -m32"
+            outdir: Windows
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: LuaJIT/LuaJIT
+          ref: ${{ inputs.luajit_ref }}
+
+      - name: Install mingw-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 gcc-multilib
+
+      - name: Build
+        run: |
+          make -j$(nproc) BUILDMODE=static TARGET_SYS=Windows \
+            CROSS=${{ matrix.cross }} HOST_CC="${{ matrix.hostcc }}" \
+            XCFLAGS="${{ env.XCFLAGS_BASE }}"
+
+      - name: Collect
+        run: |
+          mkdir -p out/${{ matrix.outdir }}
+          cp src/libluajit.a out/${{ matrix.outdir }}/libluajit-5.1.a
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.outdir }}-mingw
+          path: out
+
+  # Universal (arm64 + x86_64) static lib for macOS.
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: LuaJIT/LuaJIT
+          ref: ${{ inputs.luajit_ref }}
+
+      - name: Build x86_64 slice
+        run: |
+          make clean
+          make -j$(sysctl -n hw.ncpu) BUILDMODE=static \
+            XCFLAGS="${{ env.XCFLAGS_BASE }}" \
+            TARGET_CFLAGS="-arch x86_64" TARGET_LDFLAGS="-arch x86_64"
+          cp src/libluajit.a libluajit-x86_64.a
+
+      - name: Build arm64 slice
+        run: |
+          make clean
+          make -j$(sysctl -n hw.ncpu) BUILDMODE=static \
+            XCFLAGS="${{ env.XCFLAGS_BASE }}" \
+            TARGET_CFLAGS="-arch arm64" TARGET_LDFLAGS="-arch arm64"
+          cp src/libluajit.a libluajit-arm64.a
+
+      - name: Lipo into a universal static lib
+        run: |
+          mkdir -p out/Mac
+          lipo -create -output out/Mac/libluajit-5.1.a libluajit-x86_64.a libluajit-arm64.a
+          lipo -info out/Mac/libluajit-5.1.a
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mac
+          path: out
+
+  # Device + simulator static libs for iOS. JIT is disabled (App Store
+  # forbids writable+executable memory) so these are interpreter-only.
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: LuaJIT/LuaJIT
+          ref: ${{ inputs.luajit_ref }}
+
+      - name: Build device (arm64)
+        run: |
+          make clean
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          make -j$(sysctl -n hw.ncpu) BUILDMODE=static TARGET_SYS=iOS \
+            XCFLAGS="${{ env.XCFLAGS_BASE }} -DLUAJIT_DISABLE_JIT" \
+            TARGET_CFLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=12.0" \
+            TARGET_LDFLAGS="-arch arm64 -isysroot $SDK"
+          mkdir -p out/iPhone
+          cp src/libluajit.a out/iPhone/libluajit.iphoneos-64.a
+
+      - name: Build simulator (x86_64)
+        run: |
+          make clean
+          SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          make -j$(sysctl -n hw.ncpu) BUILDMODE=static TARGET_SYS=iOS \
+            XCFLAGS="${{ env.XCFLAGS_BASE }} -DLUAJIT_DISABLE_JIT" \
+            TARGET_CFLAGS="-arch x86_64 -isysroot $SDK -mios-simulator-version-min=12.0" \
+            TARGET_LDFLAGS="-arch x86_64 -isysroot $SDK"
+          cp src/libluajit.a out/iPhone/libluajit.iphonesim-64.a
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iPhone
+          path: out
+
+  android:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - abi: arm64-v8a
+            triple: aarch64-linux-android21
+          - abi: armeabi-v7a
+            triple: armv7a-linux-androideabi21
+          - abi: x86
+            triple: i686-linux-android21
+          - abi: x86_64
+            triple: x86_64-linux-android21
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: LuaJIT/LuaJIT
+          ref: ${{ inputs.luajit_ref }}
+
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+
+      - name: Build
+        env:
+          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
+          make -j$(nproc) BUILDMODE=static TARGET_SYS=Linux \
+            HOST_CC="gcc" \
+            CC=$TOOLCHAIN/bin/${{ matrix.triple }}-clang \
+            CROSS= \
+            AR="$TOOLCHAIN/bin/llvm-ar rcus" \
+            NM=$TOOLCHAIN/bin/llvm-nm \
+            RANLIB=$TOOLCHAIN/bin/llvm-ranlib \
+            XCFLAGS="${{ env.XCFLAGS_BASE }} -fPIC"
+
+      - name: Collect
+        run: |
+          mkdir -p out/Android/${{ matrix.abi }}
+          cp src/libluajit.a out/Android/${{ matrix.abi }}/libluajit.a
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Android-${{ matrix.abi }}
+          path: out
+
+  # Gathers every platform's artifact into one zip laid out exactly like
+  # linc_luajit's lib/lua/lib/ folder, ready to unzip over the repo.
+  package:
+    needs: [linux64, windows-msvc, windows-mingw, mac, ios, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Merge into lib/lua/lib layout
+        run: |
+          mkdir -p dist
+          for d in artifacts/*/; do
+            cp -rn "$d"/* dist/ 2>/dev/null || true
+          done
+          find dist -type f
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lib-lua-lib
+          path: dist

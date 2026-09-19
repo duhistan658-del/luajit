@@ -49,6 +49,7 @@ jobs:
   windows-msvc:
     runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: x86
@@ -94,6 +95,7 @@ jobs:
   windows-mingw:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - cross: x86_64-w64-mingw32-
@@ -132,6 +134,10 @@ jobs:
   # Universal (arm64 + x86_64) static lib for macOS.
   mac:
     runs-on: macos-latest
+    env:
+      # Recent Xcode (26.x) requires this to be set explicitly, even for
+      # `make clean` - without it the top-level Makefile refuses to run.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -169,6 +175,8 @@ jobs:
   # forbids writable+executable memory) so these are interpreter-only.
   ios:
     runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -204,16 +212,25 @@ jobs:
   android:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
+          # host_cc must match the target's pointer width, or buildvm
+          # generates headers with the wrong pointer size ("pointer size
+          # mismatch in cross-build") - 32-bit targets need a 32-bit host
+          # minilua/buildvm even though the build machine is 64-bit.
           - abi: arm64-v8a
             triple: aarch64-linux-android21
+            host_cc: "gcc"
           - abi: armeabi-v7a
             triple: armv7a-linux-androideabi21
+            host_cc: "gcc -m32"
           - abi: x86
             triple: i686-linux-android21
+            host_cc: "gcc -m32"
           - abi: x86_64
             triple: x86_64-linux-android21
+            host_cc: "gcc"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -225,13 +242,19 @@ jobs:
         with:
           ndk-version: r26d
 
+      - name: Install 32-bit host libs (needed for 32-bit host_cc)
+        if: ${{ contains(matrix.host_cc, '-m32') }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib
+
       - name: Build
         env:
           NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
           make -j$(nproc) BUILDMODE=static TARGET_SYS=Linux \
-            HOST_CC="gcc" \
+            HOST_CC="${{ matrix.host_cc }}" \
             CC=$TOOLCHAIN/bin/${{ matrix.triple }}-clang \
             CROSS= \
             AR="$TOOLCHAIN/bin/llvm-ar rcus" \

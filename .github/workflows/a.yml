@@ -31,7 +31,7 @@ jobs:
           ref: ${{ inputs.luajit_ref }}
 
       - name: Build
-        run: make -j$(nproc) BUILDMODE=static XCFLAGS="${{ env.XCFLAGS_BASE }}"
+        run: make -j$(nproc) -C src libluajit.a BUILDMODE=static XCFLAGS="${{ env.XCFLAGS_BASE }}"
 
       - name: Collect
         run: |
@@ -117,7 +117,7 @@ jobs:
 
       - name: Build
         run: |
-          make -j$(nproc) BUILDMODE=static TARGET_SYS=Windows \
+          make -j$(nproc) -C src libluajit.a BUILDMODE=static TARGET_SYS=Windows \
             CROSS=${{ matrix.cross }} HOST_CC="${{ matrix.hostcc }}" \
             XCFLAGS="${{ env.XCFLAGS_BASE }}"
 
@@ -147,7 +147,7 @@ jobs:
       - name: Build x86_64 slice
         run: |
           make clean
-          make -j$(sysctl -n hw.ncpu) BUILDMODE=static \
+          make -j$(sysctl -n hw.ncpu) -C src libluajit.a BUILDMODE=static \
             XCFLAGS="${{ env.XCFLAGS_BASE }}" \
             TARGET_CFLAGS="-arch x86_64" TARGET_LDFLAGS="-arch x86_64"
           cp src/libluajit.a libluajit-x86_64.a
@@ -155,7 +155,7 @@ jobs:
       - name: Build arm64 slice
         run: |
           make clean
-          make -j$(sysctl -n hw.ncpu) BUILDMODE=static \
+          make -j$(sysctl -n hw.ncpu) -C src libluajit.a BUILDMODE=static \
             XCFLAGS="${{ env.XCFLAGS_BASE }}" \
             TARGET_CFLAGS="-arch arm64" TARGET_LDFLAGS="-arch arm64"
           cp src/libluajit.a libluajit-arm64.a
@@ -187,7 +187,7 @@ jobs:
         run: |
           make clean
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          make -j$(sysctl -n hw.ncpu) BUILDMODE=static TARGET_SYS=iOS \
+          make -j$(sysctl -n hw.ncpu) -C src libluajit.a BUILDMODE=static TARGET_SYS=iOS \
             XCFLAGS="${{ env.XCFLAGS_BASE }} -DLUAJIT_DISABLE_JIT" \
             TARGET_CFLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=12.0" \
             TARGET_LDFLAGS="-arch arm64 -isysroot $SDK"
@@ -198,7 +198,7 @@ jobs:
         run: |
           make clean
           SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
-          make -j$(sysctl -n hw.ncpu) BUILDMODE=static TARGET_SYS=iOS \
+          make -j$(sysctl -n hw.ncpu) -C src libluajit.a BUILDMODE=static TARGET_SYS=iOS \
             XCFLAGS="${{ env.XCFLAGS_BASE }} -DLUAJIT_DISABLE_JIT" \
             TARGET_CFLAGS="-arch x86_64 -isysroot $SDK -mios-simulator-version-min=12.0" \
             TARGET_LDFLAGS="-arch x86_64 -isysroot $SDK"
@@ -253,7 +253,7 @@ jobs:
           NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
-          make -j$(nproc) BUILDMODE=static TARGET_SYS=Linux \
+          make -j$(nproc) -C src libluajit.a BUILDMODE=static TARGET_SYS=Linux \
             HOST_CC="${{ matrix.host_cc }}" \
             CC=$TOOLCHAIN/bin/${{ matrix.triple }}-clang \
             CROSS= \
